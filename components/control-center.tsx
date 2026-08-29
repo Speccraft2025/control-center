@@ -10,11 +10,13 @@ import {
   ArrowUpRight,
   AtSign,
   Bookmark,
+  BriefcaseBusiness,
   Cable,
   Check,
   CheckCircle2,
   ChevronDown,
   CircleAlert,
+  CircleDollarSign,
   Clock3,
   Copy,
   ExternalLink,
@@ -48,6 +50,7 @@ import {
   Youtube,
 } from "lucide-react";
 import type {
+  BusinessProfile,
   AudienceMetric,
   AudiencePlatform,
   DailyBriefItem,
@@ -55,6 +58,7 @@ import type {
   LiveFeedResponse,
   LiveStory,
   NewsletterFeedResponse,
+  OpportunityItem,
   PublicSettings,
   ReminderItem,
   SettingsUpdate,
@@ -87,6 +91,8 @@ import {
 
 type Tab =
   | "today"
+  | "portfolio"
+  | "money"
   | "industry"
   | "mentions"
   | "reminders"
@@ -105,6 +111,8 @@ type SettingsSection =
   | "integrations";
 type Reminder = ReminderItem;
 type Task = TaskItem;
+type Business = BusinessProfile;
+type Opportunity = OpportunityItem;
 
 const emptySettings: PublicSettings = {
   general: { workspaceName: "Control Center" },
@@ -143,6 +151,8 @@ const emptySettings: PublicSettings = {
 
 const nav: { id: Tab; label: string; icon: typeof Activity }[] = [
   { id: "today", label: "Today", icon: LayoutDashboard },
+  { id: "portfolio", label: "Portfolio", icon: BriefcaseBusiness },
+  { id: "money", label: "Money", icon: CircleDollarSign },
   { id: "industry", label: "Industry", icon: Radio },
   { id: "mentions", label: "Mentions", icon: AtSign },
   { id: "reminders", label: "Reminders", icon: Bookmark },
@@ -227,6 +237,16 @@ function formatNumber(value: number) {
   }).format(value);
 }
 
+function formatMoney(value: number | null | undefined) {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency: "USD",
+    notation: Math.abs(value) >= 100_000 ? "compact" : "standard",
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
 function localDateValue(date = new Date()) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -247,6 +267,25 @@ function formatTaskDue(value: string) {
 
 function isTaskDueToday(value: string) {
   return value === "Today" || value === localDateValue();
+}
+
+function businessHealthScore(business: Business) {
+  let score = 45;
+  if (business.revenueTarget && business.revenueTarget > 0 && business.cashCollected !== null) {
+    score += Math.min(30, Math.round((business.cashCollected / business.revenueTarget) * 30));
+  }
+  if (business.pipelineValue && business.pipelineValue > 0) score += 15;
+  if (business.nextAction && !/decide the next revenue action/i.test(business.nextAction)) score += 10;
+  if (business.topBlocker && !/no blocker captured/i.test(business.topBlocker)) score -= 10;
+  return Math.max(0, Math.min(100, score));
+}
+
+function opportunityRank(opportunity: Opportunity) {
+  const confidence = { High: 30, Medium: 18, Low: 8 }[opportunity.confidence];
+  const speed = { Now: 25, "This week": 16, "This month": 7 }[opportunity.speed];
+  const status = { Open: 16, "In progress": 12, Won: -20, Lost: -30 }[opportunity.status];
+  const value = opportunity.value ? Math.min(40, Math.round(opportunity.value / 250)) : 0;
+  return confidence + speed + status + value;
 }
 
 function readLegacyList<T>(key: string): T[] {
@@ -647,17 +686,36 @@ function newsletterSetupReady(settings: PublicSettings) {
 function TodayView({
   settings,
   tasks,
+  businesses,
+  opportunities,
   goTo,
   openSettings,
   addBriefTask,
 }: {
   settings: PublicSettings;
   tasks: Task[];
+  businesses: Business[];
+  opportunities: Opportunity[];
   goTo: (tab: Tab) => void;
   openSettings: (section?: SettingsSection) => void;
   addBriefTask: (item: DailyBriefItem) => void;
 }) {
   const openTasks = tasks.filter((task) => !task.done).slice(0, 3);
+  const activeBusinesses = businesses.length;
+  const openOpportunities = opportunities.filter(
+    (item) => item.status === "Open" || item.status === "In progress",
+  );
+  const urgentOpportunities = [...openOpportunities]
+    .sort((left, right) => opportunityRank(right) - opportunityRank(left))
+    .slice(0, 3);
+  const collected = businesses.reduce(
+    (sum, business) => sum + (business.cashCollected || 0),
+    0,
+  );
+  const pipeline = businesses.reduce(
+    (sum, business) => sum + (business.pipelineValue || 0),
+    0,
+  );
   const industryConfigured =
     settings.industry.sources.length + settings.industry.keywords.length > 0;
   const configured = [
@@ -699,13 +757,40 @@ function TodayView({
             </>
           ) : (
             <>
-              <strong>{configured} of 4 live areas are configured.</strong> Open
-              a tracked page for saved results, or use Refresh to check now.
+              <strong>{activeBusinesses || 0} businesses tracked.</strong>{" "}
+              {openOpportunities.length} revenue opportunities open ·{" "}
+              {configured} of 4 intelligence feeds configured.
             </>
           )}
         </p>
-        <button aria-label="Open settings" onClick={() => openSettings()}>
+        <button
+          aria-label="Open portfolio"
+          onClick={() => goTo(activeBusinesses ? "portfolio" : "settings")}
+        >
           <ArrowRight size={18} />
+        </button>
+      </div>
+      <div className="pulse-stats reveal delay-1">
+        <button onClick={() => goTo("portfolio")}>
+          <span>Businesses</span>
+          <b>{activeBusinesses}</b>
+          <small>
+            <BriefcaseBusiness size={12} /> Portfolio health
+          </small>
+        </button>
+        <button onClick={() => goTo("money")}>
+          <span>Cash collected</span>
+          <b>{formatMoney(collected)}</b>
+          <small>
+            <CircleDollarSign size={12} /> Pipeline {formatMoney(pipeline)}
+          </small>
+        </button>
+        <button onClick={() => goTo("money")}>
+          <span>Open opportunities</span>
+          <b>{openOpportunities.length}</b>
+          <small>
+            <Sparkles size={12} /> Focus the fastest path to revenue
+          </small>
         </button>
       </div>
       <DailyBriefPanel
@@ -752,6 +837,44 @@ function TodayView({
           )}
           <button className="text-button" onClick={() => goTo("tasks")}>
             Open task list <ArrowRight size={14} />
+          </button>
+        </Panel>
+        <Panel className="priority-panel">
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">Money mode</p>
+              <h2>Fastest revenue moves</h2>
+            </div>
+            <span className="progress-count">{openOpportunities.length}</span>
+          </div>
+          {urgentOpportunities.length ? (
+            <div className="priority-list">
+              {urgentOpportunities.map((opportunity, index) => (
+                <button
+                  key={opportunity.id}
+                  className="priority-row"
+                  onClick={() => goTo("money")}
+                >
+                  <span className="check-box">{index + 1}</span>
+                  <span>
+                    <b>{opportunity.title}</b>
+                    <small>
+                      {formatMoney(opportunity.value)} · {opportunity.speed} ·{" "}
+                      {opportunity.confidence} confidence
+                    </small>
+                  </span>
+                  <ArrowRight size={16} />
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="inline-empty">
+              <CircleDollarSign size={20} />
+              <p>Add your first revenue opportunity.</p>
+            </div>
+          )}
+          <button className="text-button" onClick={() => goTo("money")}>
+            Open money mode <ArrowRight size={14} />
           </button>
         </Panel>
         <Panel className="setup-progress">
@@ -852,6 +975,352 @@ function TodayView({
             </p>
           </div>
         </Panel>
+      </div>
+    </div>
+  );
+}
+
+function PortfolioView({
+  businesses,
+  setBusinesses,
+  opportunities,
+  goToMoney,
+}: {
+  businesses: Business[];
+  setBusinesses: React.Dispatch<React.SetStateAction<Business[]>>;
+  opportunities: Opportunity[];
+  goToMoney: () => void;
+}) {
+  const [showForm, setShowForm] = useState(false);
+  const [name, setName] = useState("");
+  const [focus, setFocus] = useState("");
+  const [nextAction, setNextAction] = useState("");
+  const [blocker, setBlocker] = useState("");
+  const [revenueTarget, setRevenueTarget] = useState("");
+  const [pipelineValue, setPipelineValue] = useState("");
+  const [cashCollected, setCashCollected] = useState("");
+  const activeOpportunities = opportunities.filter(
+    (item) => item.status === "Open" || item.status === "In progress",
+  );
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (!name.trim()) return;
+    setBusinesses((values) => [
+      {
+        id: crypto.randomUUID(),
+        name: name.trim(),
+        stage: "Active",
+        owner: "Founder",
+        focus: focus.trim() || "Increase revenue this week.",
+        revenueTarget: revenueTarget ? Number(revenueTarget) : null,
+        cashCollected: cashCollected ? Number(cashCollected) : null,
+        pipelineValue: pipelineValue ? Number(pipelineValue) : null,
+        nextAction: nextAction.trim() || "Decide the next revenue action.",
+        topBlocker: blocker.trim() || "No blocker captured.",
+        updatedAt: new Date().toISOString(),
+      },
+      ...values,
+    ]);
+    setName("");
+    setFocus("");
+    setNextAction("");
+    setBlocker("");
+    setRevenueTarget("");
+    setPipelineValue("");
+    setCashCollected("");
+    setShowForm(false);
+  };
+  return (
+    <div className="view">
+      <PageHeading
+        eyebrow="Portfolio operating system"
+        title="Portfolio"
+        description="Track each business by focus, revenue, pipeline, blocker, and next move so the app helps you operate, not just monitor."
+        action={
+          <button className="button button-primary" onClick={() => setShowForm(true)}>
+            <Plus size={16} /> Add business
+          </button>
+        }
+      />
+      {showForm && (
+        <form className="portfolio-form reveal" onSubmit={submit}>
+          <label>
+            <span>Business name</span>
+            <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Studio, agency, SaaS, property, fund…" />
+          </label>
+          <label>
+            <span>Current focus</span>
+            <input value={focus} onChange={(event) => setFocus(event.target.value)} placeholder="Close retainers, improve conversion, launch offer…" />
+          </label>
+          <label>
+            <span>Next action</span>
+            <input value={nextAction} onChange={(event) => setNextAction(event.target.value)} placeholder="What should happen next?" />
+          </label>
+          <label>
+            <span>Top blocker</span>
+            <input value={blocker} onChange={(event) => setBlocker(event.target.value)} placeholder="What is slowing revenue down?" />
+          </label>
+          <label>
+            <span>Revenue target</span>
+            <input inputMode="numeric" value={revenueTarget} onChange={(event) => setRevenueTarget(event.target.value)} placeholder="15000" />
+          </label>
+          <label>
+            <span>Pipeline value</span>
+            <input inputMode="numeric" value={pipelineValue} onChange={(event) => setPipelineValue(event.target.value)} placeholder="24000" />
+          </label>
+          <label>
+            <span>Cash collected</span>
+            <input inputMode="numeric" value={cashCollected} onChange={(event) => setCashCollected(event.target.value)} placeholder="4800" />
+          </label>
+          <div className="form-actions">
+            <button className="button button-primary">Save business</button>
+            <button className="icon-button" type="button" onClick={() => setShowForm(false)}>
+              <X size={16} />
+            </button>
+          </div>
+        </form>
+      )}
+      <div className="task-summary reveal delay-1">
+        <div><span>Businesses</span><b>{businesses.length}</b></div>
+        <div><span>Open opportunities</span><b>{activeOpportunities.length}</b></div>
+        <div><span>Pipeline</span><b>{formatMoney(businesses.reduce((sum, item) => sum + (item.pipelineValue || 0), 0))}</b></div>
+        <div className="task-progress">
+          <span><i style={{ width: `${businesses.length ? businesses.reduce((sum, item) => sum + businessHealthScore(item), 0) / businesses.length : 0}%` }} /></span>
+          <small>Average business health</small>
+        </div>
+      </div>
+      <div className="business-grid reveal delay-2">
+        {businesses.map((business) => {
+          const score = businessHealthScore(business);
+          return (
+            <Panel className="business-card" key={business.id}>
+              <div className="business-card-top">
+                <div>
+                  <p className="eyebrow">{business.stage}</p>
+                  <h2>{business.name}</h2>
+                </div>
+                <Label tone={score >= 70 ? "positive" : score >= 50 ? "watch" : "high"}>
+                  {score} health
+                </Label>
+              </div>
+              <p>{business.focus}</p>
+              <div className="business-metrics">
+                <div><span>Target</span><b>{formatMoney(business.revenueTarget)}</b></div>
+                <div><span>Collected</span><b>{formatMoney(business.cashCollected)}</b></div>
+                <div><span>Pipeline</span><b>{formatMoney(business.pipelineValue)}</b></div>
+              </div>
+              <div className="business-notes">
+                <strong>Next action</strong>
+                <p>{business.nextAction}</p>
+                <strong>Top blocker</strong>
+                <p>{business.topBlocker}</p>
+              </div>
+              <button className="text-button" onClick={goToMoney}>
+                Open revenue opportunities <ArrowRight size={14} />
+              </button>
+            </Panel>
+          );
+        })}
+        {!businesses.length && (
+          <Panel className="empty-state">
+            <BriefcaseBusiness size={24} />
+            <h2>Add the businesses you actually run</h2>
+            <p>Once they live here, Zel can rank what deserves your time instead of treating your whole portfolio like one company.</p>
+          </Panel>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function MoneyView({
+  businesses,
+  opportunities,
+  setOpportunities,
+  addTask,
+}: {
+  businesses: Business[];
+  opportunities: Opportunity[];
+  setOpportunities: React.Dispatch<React.SetStateAction<Opportunity[]>>;
+  addTask: (task: Task) => void;
+}) {
+  const [showForm, setShowForm] = useState(false);
+  const [businessId, setBusinessId] = useState("");
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [value, setValue] = useState("");
+  const [confidence, setConfidence] = useState<Opportunity["confidence"]>("Medium");
+  const [speed, setSpeed] = useState<Opportunity["speed"]>("This week");
+  const [nextStep, setNextStep] = useState("");
+  const openItems = opportunities
+    .filter((item) => item.status === "Open" || item.status === "In progress")
+    .sort((left, right) => opportunityRank(right) - opportunityRank(left));
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    if (!title.trim() || !businessId) return;
+    setOpportunities((values) => [
+      {
+        id: crypto.randomUUID(),
+        businessId,
+        title: title.trim(),
+        description: description.trim() || "Revenue opportunity.",
+        value: value ? Number(value) : null,
+        confidence,
+        speed,
+        status: "Open",
+        nextStep: nextStep.trim() || "Define the next step.",
+        source: "Manual",
+        createdAt: new Date().toISOString(),
+      },
+      ...values,
+    ]);
+    setShowForm(false);
+    setBusinessId("");
+    setTitle("");
+    setDescription("");
+    setValue("");
+    setConfidence("Medium");
+    setSpeed("This week");
+    setNextStep("");
+  };
+  return (
+    <div className="view">
+      <PageHeading
+        eyebrow="Revenue command center"
+        title="Money Mode"
+        description="Rank the deals, offers, launches, renewals, and follow-ups most likely to create cash in the shortest time."
+        action={
+          <button className="button button-primary" onClick={() => setShowForm(true)} disabled={!businesses.length}>
+            <Plus size={16} /> Add opportunity
+          </button>
+        }
+      />
+      {!businesses.length && (
+        <Panel className="empty-state">
+          <CircleDollarSign size={24} />
+          <h2>Add a business first</h2>
+          <p>Money Mode works best once your portfolio companies exist, so each opportunity has a home and an owner.</p>
+        </Panel>
+      )}
+      {showForm && businesses.length > 0 && (
+        <form className="portfolio-form reveal" onSubmit={submit}>
+          <label>
+            <span>Business</span>
+            <select value={businessId} onChange={(event) => setBusinessId(event.target.value)}>
+              <option value="">Choose a business</option>
+              {businesses.map((business) => (
+                <option key={business.id} value={String(business.id)}>{business.name}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Opportunity</span>
+            <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Retainer close, upsell, launch, renewal…" />
+          </label>
+          <label>
+            <span>Description</span>
+            <input value={description} onChange={(event) => setDescription(event.target.value)} placeholder="Why this could make money" />
+          </label>
+          <label>
+            <span>Potential value</span>
+            <input inputMode="numeric" value={value} onChange={(event) => setValue(event.target.value)} placeholder="5000" />
+          </label>
+          <label>
+            <span>Confidence</span>
+            <select value={confidence} onChange={(event) => setConfidence(event.target.value as Opportunity["confidence"])}>
+              <option value="High">High</option>
+              <option value="Medium">Medium</option>
+              <option value="Low">Low</option>
+            </select>
+          </label>
+          <label>
+            <span>Speed</span>
+            <select value={speed} onChange={(event) => setSpeed(event.target.value as Opportunity["speed"])}>
+              <option value="Now">Now</option>
+              <option value="This week">This week</option>
+              <option value="This month">This month</option>
+            </select>
+          </label>
+          <label>
+            <span>Next step</span>
+            <input value={nextStep} onChange={(event) => setNextStep(event.target.value)} placeholder="Send proposal, follow up, fix checkout…" />
+          </label>
+          <div className="form-actions">
+            <button className="button button-primary">Save opportunity</button>
+            <button className="icon-button" type="button" onClick={() => setShowForm(false)}>
+              <X size={16} />
+            </button>
+          </div>
+        </form>
+      )}
+      <div className="story-stack reveal delay-1">
+        {openItems.map((item) => {
+          const business = businesses.find((entry) => String(entry.id) === String(item.businessId));
+          return (
+            <article className="story-card" key={item.id}>
+              <div className="story-index">{String(Math.max(1, opportunityRank(item))).padStart(2, "0")}</div>
+              <div className="story-body">
+                <div className="story-meta">
+                  <span>{business?.name || "Unknown business"}</span>
+                  <i />
+                  <span>{item.speed}</span>
+                  <Label tone={item.confidence === "High" ? "positive" : item.confidence === "Low" ? "watch" : "brief"}>
+                    {item.confidence} confidence
+                  </Label>
+                  <Label tone="high">{item.status}</Label>
+                </div>
+                <h2>{item.title}</h2>
+                <p>{item.description}</p>
+                <p className="importance-reason">
+                  <Sparkles size={12} /> {formatMoney(item.value)} potential · next step: {item.nextStep}
+                </p>
+                <div className="story-footer">
+                  <span />
+                  <div>
+                    <button
+                      title="Create task"
+                      onClick={() =>
+                        addTask({
+                          id: `opportunity:${item.id}`,
+                          title: item.title,
+                          description: `${business?.name || "Business"} · ${item.nextStep}`,
+                          due: localDateValue(),
+                          recurrence: "One-time",
+                          priority: item.confidence === "High" ? "High" : "Normal",
+                          done: false,
+                          createdAt: new Date().toISOString(),
+                        })
+                      }
+                    >
+                      <ListTodo size={16} />
+                    </button>
+                    <button
+                      title="Mark in progress"
+                      onClick={() =>
+                        setOpportunities((values) =>
+                          values.map((entry) =>
+                            entry.id === item.id
+                              ? { ...entry, status: "In progress", updatedAt: new Date().toISOString() }
+                              : entry,
+                          ),
+                        )
+                      }
+                    >
+                      <Check size={16} />
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </article>
+          );
+        })}
+        {!openItems.length && businesses.length > 0 && (
+          <Panel className="empty-state">
+            <Sparkles size={24} />
+            <h2>No open revenue opportunities yet</h2>
+            <p>Capture the deals, launches, follow-ups, or offers that can make money now, then Zel can help rank what matters most.</p>
+          </Panel>
+        )}
       </div>
     </div>
   );
@@ -3376,6 +3845,8 @@ export function ControlCenter() {
   const [settings, setSettings] = useState<PublicSettings>(emptySettings);
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [businesses, setBusinesses] = useState<Business[]>([]);
+  const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [toast, setToast] = useState("");
   const [workspaceReady, setWorkspaceReady] = useState(false);
   const [bootstrapStatus, setBootstrapStatus] = useState<
@@ -3421,10 +3892,17 @@ export function ControlCenter() {
           ? {
               reminders: readLegacyList<Reminder>("control-center-v2-reminders"),
               tasks: readLegacyList<Task>("control-center-v2-tasks"),
+              businesses: [],
+              opportunities: [],
             }
-          : { reminders: [], tasks: [] };
+          : { reminders: [], tasks: [], businesses: [], opportunities: [] };
         let nextWorkspace: WorkspaceState = saved.initialized
-          ? { reminders: saved.reminders, tasks: saved.tasks }
+          ? {
+              reminders: saved.reminders,
+              tasks: saved.tasks,
+              businesses: saved.businesses || [],
+              opportunities: saved.opportunities || [],
+            }
           : legacy;
         const canRecover = saved.initialized || saved.legacyBrowserImportAllowed;
         if (recovery && canRecover) nextWorkspace = recovery.workspace;
@@ -3444,6 +3922,8 @@ export function ControlCenter() {
         setSettings(loadedSettings);
         setReminders(nextWorkspace.reminders);
         setTasks(nextWorkspace.tasks);
+        setBusinesses(nextWorkspace.businesses);
+        setOpportunities(nextWorkspace.opportunities);
         setWorkspaceReady(true);
         setBootstrapStatus("ready");
       } catch (error) {
@@ -3463,7 +3943,12 @@ export function ControlCenter() {
   }, [bootstrapAttempt]);
   useEffect(() => {
     if (!workspaceReady) return;
-    const workspace = { reminders, tasks } satisfies WorkspaceState;
+    const workspace = {
+      reminders,
+      tasks,
+      businesses,
+      opportunities,
+    } satisfies WorkspaceState;
     const recovery: WorkspaceRecovery = {
       id: crypto.randomUUID(),
       savedAt: new Date().toISOString(),
@@ -3512,7 +3997,7 @@ export function ControlCenter() {
             : "Tasks and reminders could not be saved.",
         );
       });
-  }, [reminders, tasks, workspaceReady]);
+  }, [businesses, opportunities, reminders, tasks, workspaceReady]);
   useEffect(() => {
     if (!toast) return;
     const timer = window.setTimeout(() => setToast(""), 2600);
@@ -3575,6 +4060,14 @@ export function ControlCenter() {
       },
       ...values,
     ]);
+    setToast("Added to tasks");
+  };
+  const addTask = (task: Task) => {
+    if (tasks.some((entry) => entry.id === task.id)) {
+      setToast("That task already exists");
+      return;
+    }
+    setTasks((values) => [task, ...values]);
     setToast("Added to tasks");
   };
   const openSettings = (section?: SettingsSection) => {
@@ -3713,9 +4206,27 @@ export function ControlCenter() {
           <TodayView
             settings={settings}
             tasks={tasks}
+            businesses={businesses}
+            opportunities={opportunities}
             goTo={goTo}
             openSettings={openSettings}
             addBriefTask={addBriefTask}
+          />
+        )}{" "}
+        {activeTab === "portfolio" && (
+          <PortfolioView
+            businesses={businesses}
+            setBusinesses={setBusinesses}
+            opportunities={opportunities}
+            goToMoney={() => goTo("money")}
+          />
+        )}{" "}
+        {activeTab === "money" && (
+          <MoneyView
+            businesses={businesses}
+            opportunities={opportunities}
+            setOpportunities={setOpportunities}
+            addTask={addTask}
           />
         )}{" "}
         {activeTab === "industry" && (

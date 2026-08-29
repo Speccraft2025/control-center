@@ -167,6 +167,8 @@ test("reminders and tasks persist in SQLite and fail closed on a corrupt row", (
   writeWorkspaceState(database, {
     reminders: [{ id: "reminder-1", type: "Link", title: "Read later", source: "example.com", note: "Useful", accent: "teal" }],
     tasks: [{ id: "task-1", title: "Follow up", description: "Send notes", due: "2026-08-25", recurrence: "One-time", priority: "Normal", done: false }],
+    businesses: [],
+    opportunities: [],
   });
   assert.equal(hasWorkspaceState(database), true);
   assert.equal(readWorkspaceState(database).reminders[0].title, "Read later");
@@ -201,8 +203,8 @@ test("workspace writes cannot remove immutable recurring completion history", ()
     completedAt: "2026-08-25T19:00:00.000Z",
     seriesId: "series-1",
   };
-  writeWorkspaceState(database, { reminders: [], tasks: [occurrence] });
-  const persisted = writeWorkspaceState(database, { reminders: [], tasks: [] });
+  writeWorkspaceState(database, { reminders: [], tasks: [occurrence], businesses: [], opportunities: [] });
+  const persisted = writeWorkspaceState(database, { reminders: [], tasks: [], businesses: [], opportunities: [] });
 
   assert.deepEqual(persisted.tasks, [occurrence]);
   assert.deepEqual(readWorkspaceState(database).tasks, [occurrence]);

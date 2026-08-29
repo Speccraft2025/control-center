@@ -275,9 +275,41 @@ export type TaskItem = {
   recurrenceAnchorDay?: number;
 };
 
+export type BusinessProfile = {
+  id: string | number;
+  name: string;
+  stage: string;
+  owner: string;
+  focus: string;
+  revenueTarget: number | null;
+  cashCollected: number | null;
+  pipelineValue: number | null;
+  nextAction: string;
+  topBlocker: string;
+  notes?: string;
+  updatedAt?: string;
+};
+
+export type OpportunityItem = {
+  id: string | number;
+  businessId: string | number;
+  title: string;
+  description: string;
+  value: number | null;
+  confidence: "High" | "Medium" | "Low";
+  speed: "Now" | "This week" | "This month";
+  status: "Open" | "In progress" | "Won" | "Lost";
+  nextStep: string;
+  source: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 export type WorkspaceState = {
   reminders: ReminderItem[];
   tasks: TaskItem[];
+  businesses: BusinessProfile[];
+  opportunities: OpportunityItem[];
 };
 
 export type WorkspaceStateResponse = WorkspaceState & {

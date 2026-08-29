@@ -2,7 +2,12 @@ import type { DatabaseSync } from "node:sqlite";
 import type { WorkspaceState } from "./types";
 import { preserveRecurringCompletionHistory } from "./tasks";
 
-const emptyWorkspace: WorkspaceState = { reminders: [], tasks: [] };
+const emptyWorkspace: WorkspaceState = {
+  reminders: [],
+  tasks: [],
+  businesses: [],
+  opportunities: [],
+};
 
 export function initializeWorkspaceStore(database: DatabaseSync) {
   database.exec(`
@@ -16,8 +21,11 @@ export function initializeWorkspaceStore(database: DatabaseSync) {
 }
 
 export function readWorkspaceState(database: DatabaseSync): WorkspaceState {
-  const rows = database.prepare("SELECT state_key, payload_json FROM workspace_state WHERE state_key IN ('reminders', 'tasks')").all() as unknown as Array<{ state_key: keyof WorkspaceState; payload_json: string }>;
-  if (rows.length === 1) {
+  const rows = database.prepare("SELECT state_key, payload_json FROM workspace_state WHERE state_key IN ('reminders', 'tasks', 'businesses', 'opportunities')").all() as unknown as Array<{ state_key: keyof WorkspaceState; payload_json: string }>;
+  const hasLegacyHalfState =
+    rows.some((row) => row.state_key === "reminders") !==
+    rows.some((row) => row.state_key === "tasks");
+  if (hasLegacyHalfState) {
     throw new Error("The saved workspace is incomplete. Restore it from a backup before making changes.");
   }
   const state = structuredClone(emptyWorkspace);
@@ -37,7 +45,7 @@ export function readWorkspaceState(database: DatabaseSync): WorkspaceState {
 }
 
 export function hasWorkspaceState(database: DatabaseSync) {
-  const row = database.prepare("SELECT COUNT(*) AS count FROM workspace_state WHERE state_key IN ('reminders', 'tasks')").get() as unknown as { count: number };
+  const row = database.prepare("SELECT COUNT(*) AS count FROM workspace_state WHERE state_key IN ('reminders', 'tasks', 'businesses', 'opportunities')").get() as unknown as { count: number };
   return Number(row.count) > 0;
 }
 
@@ -55,9 +63,13 @@ export function writeWorkspaceState(database: DatabaseSync, state: WorkspaceStat
     const persisted = {
       reminders: state.reminders,
       tasks: preserveRecurringCompletionHistory(existing.tasks, state.tasks),
+      businesses: state.businesses,
+      opportunities: state.opportunities,
     };
     statement.run("reminders", JSON.stringify(persisted.reminders), now);
     statement.run("tasks", JSON.stringify(persisted.tasks), now);
+    statement.run("businesses", JSON.stringify(persisted.businesses), now);
+    statement.run("opportunities", JSON.stringify(persisted.opportunities), now);
     database.exec("COMMIT");
     return persisted;
   } catch (error) {
