@@ -184,6 +184,16 @@ type ZeltechSyncResponse = {
   } | null;
   warnings?: string[];
 };
+type ZeltechConnectionStatus = {
+  baseUrl: string;
+  hasSyncSecret: boolean;
+  hasSupabaseStorage: boolean;
+  hasGoogleCalendar: boolean;
+  hasGitHubToken: boolean;
+  mode: "shared-backend" | "public-fallback";
+  checkedAt: string;
+  summary: string;
+};
 
 const emptySettings: PublicSettings = {
   general: { workspaceName: "Control Center" },
@@ -3172,9 +3182,11 @@ function settingsDraft(settings: PublicSettings): SettingsDraft {
 
 function SettingsView({
   settings,
+  zelConnection,
   onSaved,
 }: {
   settings: PublicSettings;
+  zelConnection: ZeltechConnectionStatus | null;
   onSaved: (settings: PublicSettings) => void;
 }) {
   const router = useRouter();
@@ -4182,15 +4194,27 @@ function SettingsView({
               <div className="settings-title">
                 <Cable />
                 <div>
-                  <p className="eyebrow">Optional · advanced setup</p>
-                  <h2>Bring private context into Today</h2>
+                  <p className="eyebrow">Zel HQ connection</p>
+                  <h2>Run Control Center on the same backend</h2>
                   <p>
-                    Use this only if you want Today to include private messages, meetings, or to-dos from apps such as Slack, Gmail, Granola, or Calendar. Industry, Mentions, Audience, and newsletter collection do not need this page.
+                    Control Center can act as another interface for the same ZelHQ backend. When the shared backend secret is present locally, this UI can read the private synced state and write back to ZelHQ server routes.
                   </p>
                 </div>
               </div>
+              {zelConnection && (
+                <div className="integration-explainer">
+                  <h3>{zelConnection.mode === "shared-backend" ? "Shared backend is live" : "Public fallback only"}</h3>
+                  <p>{zelConnection.summary}</p>
+                  <ol>
+                    <li><b>Backend base URL.</b> <code>{zelConnection.baseUrl}</code></li>
+                    <li><b>Private HQ state.</b> {zelConnection.hasSyncSecret ? "Available through this Control Center server." : "Not attached yet. Add HQ_SYNC_SECRET in local environment."}</li>
+                    <li><b>Shared storage.</b> {zelConnection.hasSupabaseStorage ? "Supabase storage credentials are available locally." : "Storage credentials are not present in this app environment."}</li>
+                    <li><b>Google Calendar.</b> {zelConnection.hasGoogleCalendar ? "Calendar write/read env is present." : "Calendar env vars are missing locally."}</li>
+                  </ol>
+                </div>
+              )}
               <div className="integration-explainer">
-                <h3>How it works</h3>
+                <h3>Extra private sources</h3>
                 <ol>
                   <li><b>Choose the apps below.</b> These names are labels for incoming summaries, not logins or API keys. Adding a name does not connect the app.</li>
                   <li><b>Save settings, then copy the setup prompt.</b> Paste it into Codex (with the relevant plugins installed), or use your own local script.</li>
@@ -4308,6 +4332,7 @@ export function ControlCenter() {
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
   const [liveSnapshot, setLiveSnapshot] = useState<ZeltechSyncResponse | null>(null);
+  const [zelConnection, setZelConnection] = useState<ZeltechConnectionStatus | null>(null);
   const [toast, setToast] = useState("");
   const [workspaceReady, setWorkspaceReady] = useState(false);
   const [bootstrapStatus, setBootstrapStatus] = useState<
@@ -4401,6 +4426,12 @@ export function ControlCenter() {
           settingsResponse.json() as Promise<PublicSettings>,
           workspaceResponse.json() as Promise<WorkspaceStateResponse>,
         ]);
+        void fetch("/api/zelhq/connection", { cache: "no-store" })
+          .then((response) => response.json())
+          .then((payload: ZeltechConnectionStatus) => {
+            if (!cancelled) setZelConnection(payload);
+          })
+          .catch(() => {});
         const recovery = readWorkspaceRecovery();
         const legacy: WorkspaceState = saved.legacyBrowserImportAllowed
           ? {
@@ -4880,6 +4911,7 @@ export function ControlCenter() {
         {activeTab === "settings" && (
           <SettingsView
             settings={settings}
+            zelConnection={zelConnection}
             onSaved={(saved) => {
               clearLiveDataCache();
               setSettings(saved);

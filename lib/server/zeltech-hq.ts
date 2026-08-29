@@ -3,6 +3,7 @@ import "server-only";
 import { DatabaseSync } from "node:sqlite";
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { readZeltechBackendConfig } from "@/lib/server/zeltech-config";
 
 export type ZeltechVenture = {
   id: string;
@@ -102,7 +103,9 @@ export type ZeltechLiveSnapshot = {
 
 const HQ_ROOT = "/Users/speccraftmedialtd./Documents/Web/Zeltech HQ";
 const HQ_INDEX_PATH = path.join(HQ_ROOT, "index.html");
-const PUBLIC_BASE = "https://zeltech-hq.netlify.app/.netlify/functions";
+function functionsBase() {
+  return `${readZeltechBackendConfig().baseUrl.replace(/\/$/, "")}/.netlify/functions`;
+}
 const MANAGER_DB_PATH =
   "/Users/speccraftmedialtd./Documents/Manager.io/Spec Craft Media Ltd.manager";
 
@@ -136,7 +139,7 @@ async function fetchMetrics(venture: ZeltechVenture) {
   if (![...params].length) return {};
   try {
     return await fetchJson<Partial<ZeltechVenture>>(
-      `${PUBLIC_BASE}/venture-metrics?${params.toString()}`,
+      `${functionsBase()}/venture-metrics?${params.toString()}`,
     );
   } catch {
     return {};
@@ -159,7 +162,7 @@ async function readCloudState() {
     const payload = await fetchJson<{
       state?: { ventures?: ZeltechVenture[] };
       empty?: boolean;
-    }>(`${PUBLIC_BASE}/hq-state`, {
+    }>(`${functionsBase()}/hq-state`, {
       headers: { "x-hq-secret": secret },
     });
     if (!payload.state?.ventures?.length) return null;
@@ -173,7 +176,7 @@ async function readActions() {
   try {
     const payload = await fetchJson<{
       actions?: ZeltechAction[];
-    }>(`${PUBLIC_BASE}/zel-actions`);
+    }>(`${functionsBase()}/zel-actions`);
     return payload.actions || [];
   } catch {
     return [];
@@ -185,7 +188,7 @@ async function readCalendar() {
     const payload = await fetchJson<{
       events?: ZeltechCalendarEvent[];
       error?: string;
-    }>(`${PUBLIC_BASE}/gcal?action=upcoming&days=14`);
+    }>(`${functionsBase()}/gcal?action=upcoming&days=14`);
     return payload.events || [];
   } catch {
     return [];
@@ -200,7 +203,7 @@ async function readBrief() {
       text?: string;
       meta?: ZeltechBrief["meta"];
       error?: string;
-    }>(`${PUBLIC_BASE}/zel-brief`);
+    }>(`${functionsBase()}/zel-brief`);
     if (!payload.text || !payload.subject) return null;
     return {
       subject: payload.subject,
