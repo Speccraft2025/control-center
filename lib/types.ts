@@ -273,6 +273,8 @@ export type TaskItem = {
   completedAt?: string;
   seriesId?: string | number;
   recurrenceAnchorDay?: number;
+  businessId?: string | number;
+  opportunityId?: string | number;
 };
 
 export type BusinessProfile = {

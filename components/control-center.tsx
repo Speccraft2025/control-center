@@ -113,6 +113,77 @@ type Reminder = ReminderItem;
 type Task = TaskItem;
 type Business = BusinessProfile;
 type Opportunity = OpportunityItem;
+type ZeltechSyncResponse = {
+  ventures: Array<{
+    id: string;
+    name: string;
+    mission?: string;
+    stage?: string;
+    owner?: string;
+    priority?: string;
+    status?: string;
+    health?: number;
+    revenue?: number;
+    users?: number;
+    openIssues?: number;
+    commits30d?: number;
+    deployState?: string;
+    lastDeploy?: string;
+    recentCommits?: Array<{ msg: string; date: string }>;
+  }>;
+  checkedAt: string;
+  source:
+    | string
+    | {
+        state: "cloud-sync" | "inventory-fallback";
+        actions: "live" | "unavailable";
+        calendar: "live" | "unavailable";
+        brief: "live" | "unavailable";
+        accounting: "live" | "detected";
+      };
+  actions?: Array<{
+    id: string;
+    status: string;
+    createdAt: string;
+    updatedAt: string;
+    source: string;
+    type: string;
+    priority: string;
+    venture: string;
+    title: string;
+    detail: string;
+    requiresApproval: boolean;
+    owner: string;
+  }>;
+  calendar?: Array<{
+    id: string;
+    title: string;
+    start: string;
+    end: string;
+    allDay: boolean;
+    location?: string;
+    link?: string;
+  }>;
+  brief?: {
+    subject: string;
+    text: string;
+    meta?: {
+      provider?: string;
+      model?: string;
+    };
+  } | null;
+  accounting?: {
+    connected: boolean;
+    provider: "Manager.io";
+    companyName?: string;
+    currencyCode?: string;
+    currencySymbol?: string;
+    chartOfAccounts: string[];
+    updatedAt?: string;
+    note: string;
+  } | null;
+  warnings?: string[];
+};
 
 const emptySettings: PublicSettings = {
   general: { workspaceName: "Control Center" },
@@ -247,6 +318,19 @@ function formatMoney(value: number | null | undefined) {
   }).format(value);
 }
 
+function formatMoneyWithCurrency(
+  value: number | null | undefined,
+  currency = "USD",
+) {
+  if (value === null || value === undefined || Number.isNaN(value)) return "—";
+  return new Intl.NumberFormat(undefined, {
+    style: "currency",
+    currency,
+    notation: Math.abs(value) >= 100_000 ? "compact" : "standard",
+    maximumFractionDigits: 0,
+  }).format(value);
+}
+
 function localDateValue(date = new Date()) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -262,6 +346,17 @@ function formatTaskDue(value: string) {
     day: "numeric",
     year:
       date.getFullYear() === new Date().getFullYear() ? undefined : "numeric",
+  }).format(date);
+}
+
+function formatDateTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
   }).format(date);
 }
 
@@ -286,6 +381,43 @@ function opportunityRank(opportunity: Opportunity) {
   const status = { Open: 16, "In progress": 12, Won: -20, Lost: -30 }[opportunity.status];
   const value = opportunity.value ? Math.min(40, Math.round(opportunity.value / 250)) : 0;
   return confidence + speed + status + value;
+}
+
+function ventureToBusiness(venture: ZeltechSyncResponse["ventures"][number]): Business {
+  const recentCommit = venture.recentCommits?.[0]?.msg;
+  const blocker =
+    venture.deployState === "error"
+      ? "Latest deployment failed."
+      : (venture.openIssues || 0) > 0
+        ? `${venture.openIssues} open issue${venture.openIssues === 1 ? "" : "s"} need attention.`
+        : "No blocker captured.";
+  return {
+    id: venture.id,
+    name: venture.name,
+    stage: venture.stage || venture.status || "Active",
+    owner: venture.owner || "Founder",
+    focus: venture.mission || "No mission captured yet.",
+    revenueTarget: null,
+    cashCollected:
+      typeof venture.revenue === "number" && Number.isFinite(venture.revenue)
+        ? venture.revenue
+        : null,
+    pipelineValue: null,
+    nextAction:
+      recentCommit ||
+      (venture.commits30d
+        ? `Build on the last ${venture.commits30d} commits from the last 30 days.`
+        : "Decide the next revenue action."),
+    topBlocker: blocker,
+    notes: [
+      venture.lastDeploy ? `Last deploy: ${venture.lastDeploy}` : "",
+      venture.deployState ? `Deploy state: ${venture.deployState}` : "",
+      venture.users !== undefined ? `Users: ${venture.users}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · "),
+    updatedAt: new Date().toISOString(),
+  };
 }
 
 function readLegacyList<T>(key: string): T[] {
@@ -688,6 +820,7 @@ function TodayView({
   tasks,
   businesses,
   opportunities,
+  liveSnapshot,
   goTo,
   openSettings,
   addBriefTask,
@@ -696,6 +829,7 @@ function TodayView({
   tasks: Task[];
   businesses: Business[];
   opportunities: Opportunity[];
+  liveSnapshot: ZeltechSyncResponse | null;
   goTo: (tab: Tab) => void;
   openSettings: (section?: SettingsSection) => void;
   addBriefTask: (item: DailyBriefItem) => void;
@@ -729,6 +863,13 @@ function TodayView({
     month: "long",
     day: "numeric",
   }).format(new Date());
+  const liveActions = (liveSnapshot?.actions || []).slice(0, 3);
+  const liveEvents = (liveSnapshot?.calendar || []).slice(0, 4);
+  const briefPreview = liveSnapshot?.brief?.text
+    ?.split("\n")
+    .find((line) => line.trim() && !line.trim().startsWith("#"));
+  const accounting = liveSnapshot?.accounting;
+  const moneyCurrency = accounting?.currencyCode || "USD";
   return (
     <div className="view">
       <PageHeading
@@ -780,9 +921,10 @@ function TodayView({
         </button>
         <button onClick={() => goTo("money")}>
           <span>Cash collected</span>
-          <b>{formatMoney(collected)}</b>
+          <b>{formatMoneyWithCurrency(collected, moneyCurrency)}</b>
           <small>
-            <CircleDollarSign size={12} /> Pipeline {formatMoney(pipeline)}
+            <CircleDollarSign size={12} /> Pipeline{" "}
+            {formatMoneyWithCurrency(pipeline, moneyCurrency)}
           </small>
         </button>
         <button onClick={() => goTo("money")}>
@@ -876,6 +1018,83 @@ function TodayView({
           <button className="text-button" onClick={() => goTo("money")}>
             Open money mode <ArrowRight size={14} />
           </button>
+        </Panel>
+        <Panel className="priority-panel">
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">Zel AI</p>
+              <h2>Live operating picture</h2>
+            </div>
+            <span className="progress-count">{liveActions.length}</span>
+          </div>
+          {briefPreview ? (
+            <div className="week-horizon">
+              <span>
+                <Sparkles size={14} /> Brief
+              </span>
+              <p>{briefPreview}</p>
+            </div>
+          ) : null}
+          {liveActions.length ? (
+            <div className="priority-list">
+              {liveActions.map((action, index) => (
+                <button
+                  key={action.id}
+                  className="priority-row"
+                  onClick={() => goTo("money")}
+                >
+                  <span className="check-box">{index + 1}</span>
+                  <span>
+                    <b>{action.title}</b>
+                    <small>
+                      {action.venture || action.owner} · {action.priority} ·{" "}
+                      {formatDate(action.updatedAt)}
+                    </small>
+                  </span>
+                  <ArrowRight size={16} />
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="inline-empty">
+              <Sparkles size={20} />
+              <p>No live ZelHQ actions were available.</p>
+            </div>
+          )}
+        </Panel>
+        <Panel className="priority-panel">
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">Calendar</p>
+              <h2>What today actually looks like</h2>
+            </div>
+            <span className="progress-count">{liveEvents.length}</span>
+          </div>
+          {liveEvents.length ? (
+            <div className="timeline">
+              {liveEvents.map((event, index) => (
+                <div className={classNames("time-row", index === 0 && "active")} key={event.id}>
+                  <time>{event.allDay ? "All day" : formatDateTime(event.start)}</time>
+                  <span className={classNames("time-dot", index === 0 ? "coral" : "teal")} />
+                  <div>
+                    <b>{event.title}</b>
+                    <small>{event.location || "Synced from Google Calendar"}</small>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="inline-empty">
+              <Clock3 size={20} />
+              <p>Calendar data was not available from ZelHQ.</p>
+            </div>
+          )}
+          {liveSnapshot?.warnings?.[0] ? (
+            <p className="calendar-note">
+              <CircleAlert size={14} />
+              {liveSnapshot.warnings[0]}
+            </p>
+          ) : null}
         </Panel>
         <Panel className="setup-progress">
           <div className="panel-header">
@@ -973,6 +1192,15 @@ function TodayView({
               data directory and excluded from Git. Browser code never receives
               saved secrets.
             </p>
+            {accounting ? (
+              <p className="fine-print">
+                Money source: {accounting.provider}
+                {accounting.companyName ? ` · ${accounting.companyName}` : ""}
+                {accounting.updatedAt
+                  ? ` · seen ${formatDate(accounting.updatedAt)}`
+                  : ""}
+              </p>
+            ) : null}
           </div>
         </Panel>
       </div>
@@ -985,13 +1213,16 @@ function PortfolioView({
   setBusinesses,
   opportunities,
   goToMoney,
+  syncFromZeltech,
 }: {
   businesses: Business[];
   setBusinesses: React.Dispatch<React.SetStateAction<Business[]>>;
   opportunities: Opportunity[];
   goToMoney: () => void;
+  syncFromZeltech: () => Promise<void>;
 }) {
   const [showForm, setShowForm] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [name, setName] = useState("");
   const [focus, setFocus] = useState("");
   const [nextAction, setNextAction] = useState("");
@@ -1035,13 +1266,37 @@ function PortfolioView({
       <PageHeading
         eyebrow="Portfolio operating system"
         title="Portfolio"
-        description="Track each business by focus, revenue, pipeline, blocker, and next move so the app helps you operate, not just monitor."
+        description="A quiet ledger for the businesses you run, with just enough structure to make the next commercial move obvious."
         action={
-          <button className="button button-primary" onClick={() => setShowForm(true)}>
-            <Plus size={16} /> Add business
-          </button>
+          <div className="toolbar-actions">
+            <button
+              className="button button-ghost"
+              onClick={async () => {
+                setSyncing(true);
+                try {
+                  await syncFromZeltech();
+                } finally {
+                  setSyncing(false);
+                }
+              }}
+              disabled={syncing}
+            >
+              <RefreshCw className={syncing ? "spin" : ""} size={15} /> Sync Zel HQ
+            </button>
+            <button className="button button-primary" onClick={() => setShowForm(true)}>
+              <Plus size={16} /> Add business
+            </button>
+          </div>
         }
       />
+      <div className="brief-banner reveal delay-1 portfolio-banner">
+        <div className="brief-mark">
+          <BriefcaseBusiness size={19} />
+        </div>
+        <p>
+          <strong>Run each company as its own line of business.</strong> Capture focus, cash, pipeline, and the one action that moves revenue forward.
+        </p>
+      </div>
       {showForm && (
         <form className="portfolio-form reveal" onSubmit={submit}>
           <label>
@@ -1136,11 +1391,13 @@ function PortfolioView({
 function MoneyView({
   businesses,
   opportunities,
+  liveSnapshot,
   setOpportunities,
   addTask,
 }: {
   businesses: Business[];
   opportunities: Opportunity[];
+  liveSnapshot: ZeltechSyncResponse | null;
   setOpportunities: React.Dispatch<React.SetStateAction<Opportunity[]>>;
   addTask: (task: Task) => void;
 }) {
@@ -1152,9 +1409,30 @@ function MoneyView({
   const [confidence, setConfidence] = useState<Opportunity["confidence"]>("Medium");
   const [speed, setSpeed] = useState<Opportunity["speed"]>("This week");
   const [nextStep, setNextStep] = useState("");
-  const openItems = opportunities
-    .filter((item) => item.status === "Open" || item.status === "In progress")
-    .sort((left, right) => opportunityRank(right) - opportunityRank(left));
+  const pipeline = {
+    open: opportunities
+      .filter((item) => item.status === "Open")
+      .sort((left, right) => opportunityRank(right) - opportunityRank(left)),
+    progress: opportunities
+      .filter((item) => item.status === "In progress")
+      .sort((left, right) => opportunityRank(right) - opportunityRank(left)),
+    won: opportunities
+      .filter((item) => item.status === "Won")
+      .sort((left, right) => (right.updatedAt || "").localeCompare(left.updatedAt || "")),
+    lost: opportunities
+      .filter((item) => item.status === "Lost")
+      .sort((left, right) => (right.updatedAt || "").localeCompare(left.updatedAt || "")),
+  };
+  const openValue = [...pipeline.open, ...pipeline.progress].reduce(
+    (sum, item) => sum + (item.value || 0),
+    0,
+  );
+  const wonValue = pipeline.won.reduce((sum, item) => sum + (item.value || 0), 0);
+  const accounting = liveSnapshot?.accounting;
+  const moneyCurrency = accounting?.currencyCode || "USD";
+  const liveActions = (liveSnapshot?.actions || []).filter(
+    (item) => item.status !== "done",
+  );
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!title.trim() || !businessId) return;
@@ -1188,13 +1466,35 @@ function MoneyView({
       <PageHeading
         eyebrow="Revenue command center"
         title="Money Mode"
-        description="Rank the deals, offers, launches, renewals, and follow-ups most likely to create cash in the shortest time."
+        description="A revenue board for the offers, deals, renewals, and follow-ups that deserve founder attention right now."
         action={
           <button className="button button-primary" onClick={() => setShowForm(true)} disabled={!businesses.length}>
             <Plus size={16} /> Add opportunity
           </button>
         }
       />
+      <div className="brief-banner reveal delay-1 money-banner">
+        <div className="brief-mark">
+          <CircleDollarSign size={19} />
+        </div>
+        <p>
+          <strong>Keep the pipeline honest.</strong> Move opportunities from open to won, and turn the best ones into execution with one click.
+        </p>
+      </div>
+      {accounting ? (
+        <Panel className="integration-explainer reveal delay-1">
+          <h3>Money source: {accounting.provider}</h3>
+          <p>
+            {accounting.note}
+          </p>
+          <div className="task-summary" style={{ marginTop: 18 }}>
+            <div><b>{accounting.currencyCode || "—"}</b><span>currency</span></div>
+            <div><b>{accounting.chartOfAccounts.length}</b><span>ledger accounts surfaced</span></div>
+            <div><b>{accounting.companyName || "Manager.io"}</b><span>company file</span></div>
+            <div><b>{accounting.updatedAt ? formatDate(accounting.updatedAt) : "—"}</b><span>last ledger activity</span></div>
+          </div>
+        </Panel>
+      ) : null}
       {!businesses.length && (
         <Panel className="empty-state">
           <CircleDollarSign size={24} />
@@ -1253,74 +1553,161 @@ function MoneyView({
           </div>
         </form>
       )}
-      <div className="story-stack reveal delay-1">
-        {openItems.map((item) => {
+      <div className="task-summary reveal delay-1">
+        <div><b>{pipeline.open.length}</b><span>open</span></div>
+        <div><b>{pipeline.progress.length}</b><span>in progress</span></div>
+        <div><b>{formatMoneyWithCurrency(openValue, moneyCurrency)}</b><span>open pipeline</span></div>
+        <div><b>{formatMoneyWithCurrency(wonValue, moneyCurrency)}</b><span>won</span></div>
+        <div className="task-progress">
+          <span><i style={{ width: `${opportunities.length ? (pipeline.won.length / opportunities.length) * 100 : 0}%` }} /></span>
+          <small>{pipeline.won.length} won opportunities</small>
+        </div>
+      </div>
+      {!!liveActions.length && (
+        <Panel className="reveal delay-1" style={{ padding: 24, marginBottom: 16 }}>
+          <div className="panel-header">
+            <div>
+              <p className="eyebrow">Zel actions</p>
+              <h2>Revenue-adjacent work from HQ</h2>
+            </div>
+            <span className="progress-count">{liveActions.length}</span>
+          </div>
+          <div className="digest-list">
+            {liveActions.slice(0, 4).map((action) => (
+              <button key={action.id} className="digest-row" onClick={() => {
+                setShowForm(true);
+                const matching = businesses.find((business) => business.name.toLowerCase() === action.venture.toLowerCase());
+                setBusinessId(matching ? String(matching.id) : "");
+                setTitle(action.title);
+                setDescription(action.detail);
+                setNextStep(`Follow up on Zel action owner: ${action.owner}`);
+              }}>
+                <span className="source-pill source-messages"><b>Z</b>{action.priority}</span>
+                <div>
+                  <b>{action.title}</b>
+                  <small>{action.venture || action.owner}</small>
+                </div>
+                <ArrowRight size={15} />
+              </button>
+            ))}
+          </div>
+        </Panel>
+      )}
+      <div className="money-board reveal delay-1">
+        {([
+          ["Open", pipeline.open],
+          ["In progress", pipeline.progress],
+          ["Won", pipeline.won],
+          ["Lost", pipeline.lost],
+        ] as const).map(([column, items]) => (
+          <Panel className="money-column" key={column}>
+            <div className="panel-header">
+              <div>
+                <p className="eyebrow">Pipeline stage</p>
+                <h2>{column}</h2>
+              </div>
+              <span className="progress-count">{items.length}</span>
+            </div>
+            <div className="money-column-stack">
+              {items.map((item) => {
           const business = businesses.find((entry) => String(entry.id) === String(item.businessId));
           return (
-            <article className="story-card" key={item.id}>
-              <div className="story-index">{String(Math.max(1, opportunityRank(item))).padStart(2, "0")}</div>
-              <div className="story-body">
-                <div className="story-meta">
-                  <span>{business?.name || "Unknown business"}</span>
-                  <i />
-                  <span>{item.speed}</span>
-                  <Label tone={item.confidence === "High" ? "positive" : item.confidence === "Low" ? "watch" : "brief"}>
-                    {item.confidence} confidence
-                  </Label>
-                  <Label tone="high">{item.status}</Label>
-                </div>
-                <h2>{item.title}</h2>
-                <p>{item.description}</p>
-                <p className="importance-reason">
-                  <Sparkles size={12} /> {formatMoney(item.value)} potential · next step: {item.nextStep}
-                </p>
-                <div className="story-footer">
-                  <span />
-                  <div>
-                    <button
-                      title="Create task"
-                      onClick={() =>
-                        addTask({
-                          id: `opportunity:${item.id}`,
-                          title: item.title,
-                          description: `${business?.name || "Business"} · ${item.nextStep}`,
-                          due: localDateValue(),
-                          recurrence: "One-time",
-                          priority: item.confidence === "High" ? "High" : "Normal",
-                          done: false,
-                          createdAt: new Date().toISOString(),
-                        })
-                      }
-                    >
-                      <ListTodo size={16} />
-                    </button>
-                    <button
-                      title="Mark in progress"
-                      onClick={() =>
-                        setOpportunities((values) =>
-                          values.map((entry) =>
-                            entry.id === item.id
-                              ? { ...entry, status: "In progress", updatedAt: new Date().toISOString() }
-                              : entry,
-                          ),
-                        )
-                      }
-                    >
-                      <Check size={16} />
-                    </button>
-                  </div>
-                </div>
+            <article className="money-card" key={item.id}>
+              <div className="story-meta">
+                <span>{business?.name || "Unknown business"}</span>
+                <i />
+                <span>{item.speed}</span>
+              </div>
+              <h3>{item.title}</h3>
+              <p>{item.description}</p>
+                <div className="task-context">
+                <Label tone={item.confidence === "High" ? "positive" : item.confidence === "Low" ? "watch" : "brief"}>
+                  {item.confidence}
+                </Label>
+                <Label tone="high">{formatMoneyWithCurrency(item.value, moneyCurrency)}</Label>
+              </div>
+              <p className="money-next-step">{item.nextStep}</p>
+              <div className="money-actions">
+                <button
+                  title="Create task"
+                  onClick={() =>
+                    addTask({
+                      id: `opportunity:${item.id}`,
+                      title: item.title,
+                      description: `${business?.name || "Business"} · ${item.nextStep}`,
+                      due: localDateValue(),
+                      recurrence: "One-time",
+                      priority: item.confidence === "High" ? "High" : "Normal",
+                      done: false,
+                      createdAt: new Date().toISOString(),
+                      businessId: item.businessId,
+                      opportunityId: item.id,
+                    })
+                  }
+                >
+                  <ListTodo size={15} />
+                </button>
+                {item.status !== "In progress" && item.status !== "Won" && (
+                  <button
+                    title="Mark in progress"
+                    onClick={() =>
+                      setOpportunities((values) =>
+                        values.map((entry) =>
+                          entry.id === item.id
+                            ? { ...entry, status: "In progress", updatedAt: new Date().toISOString() }
+                            : entry,
+                        ),
+                      )
+                    }
+                  >
+                    <Check size={15} />
+                  </button>
+                )}
+                {item.status !== "Won" && (
+                  <button
+                    title="Mark won"
+                    onClick={() =>
+                      setOpportunities((values) =>
+                        values.map((entry) =>
+                          entry.id === item.id
+                            ? { ...entry, status: "Won", updatedAt: new Date().toISOString() }
+                            : entry,
+                        ),
+                      )
+                    }
+                  >
+                    <CheckCircle2 size={15} />
+                  </button>
+                )}
+                {item.status !== "Lost" && (
+                  <button
+                    title="Mark lost"
+                    onClick={() =>
+                      setOpportunities((values) =>
+                        values.map((entry) =>
+                          entry.id === item.id
+                            ? { ...entry, status: "Lost", updatedAt: new Date().toISOString() }
+                            : entry,
+                        ),
+                      )
+                    }
+                  >
+                    <X size={15} />
+                  </button>
+                )}
               </div>
             </article>
           );
         })}
-        {!openItems.length && businesses.length > 0 && (
-          <Panel className="empty-state">
-            <Sparkles size={24} />
-            <h2>No open revenue opportunities yet</h2>
-            <p>Capture the deals, launches, follow-ups, or offers that can make money now, then Zel can help rank what matters most.</p>
+              {!items.length && (
+                <div className="inline-empty">
+                  <Sparkles size={18} />
+                  <p>No items in this stage.</p>
+                </div>
+              )}
+            </div>
           </Panel>
-        )}
+        ))}
       </div>
     </div>
   );
@@ -2388,15 +2775,21 @@ function NewslettersView({
 function TasksView({
   tasks,
   setTasks,
+  businesses,
+  opportunities,
 }: {
   tasks: Task[];
   setTasks: React.Dispatch<React.SetStateAction<Task[]>>;
+  businesses: Business[];
+  opportunities: Opportunity[];
 }) {
   const [showForm, setShowForm] = useState(false);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [due, setDue] = useState(localDateValue);
   const [recurrence, setRecurrence] = useState("One-time");
+  const [businessId, setBusinessId] = useState("");
+  const [opportunityId, setOpportunityId] = useState("");
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!title.trim() || !due) return;
@@ -2410,6 +2803,8 @@ function TasksView({
         priority: "Normal",
         done: false,
         createdAt: new Date().toISOString(),
+        businessId: businessId || undefined,
+        opportunityId: opportunityId || undefined,
       },
       ...values,
     ]);
@@ -2417,6 +2812,8 @@ function TasksView({
     setDescription("");
     setDue(localDateValue());
     setRecurrence("One-time");
+    setBusinessId("");
+    setOpportunityId("");
     setShowForm(false);
   };
   const complete = (task: Task) =>
@@ -2437,7 +2834,12 @@ function TasksView({
       localDateValue(new Date(task.completedAt)) === localDateValue(),
   );
   const dueToday = open.filter((task) => isTaskDueToday(task.due));
+  const linkedToBusiness = open.filter((task) => task.businessId).length;
   const todayTotal = dueToday.length + completedToday.length;
+  const visibleOpportunities = opportunities.filter(
+    (opportunity) =>
+      !businessId || String(opportunity.businessId) === String(businessId),
+  );
   return (
     <div className="view">
       <PageHeading
@@ -2491,6 +2893,37 @@ function TasksView({
                 <option>Monthly</option>
               </select>
             </label>
+            <label>
+              Business
+              <select
+                value={businessId}
+                onChange={(event) => {
+                  setBusinessId(event.target.value);
+                  setOpportunityId("");
+                }}
+              >
+                <option value="">No business linked</option>
+                {businesses.map((business) => (
+                  <option key={business.id} value={String(business.id)}>
+                    {business.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Opportunity
+              <select
+                value={opportunityId}
+                onChange={(event) => setOpportunityId(event.target.value)}
+              >
+                <option value="">No opportunity linked</option>
+                {visibleOpportunities.map((opportunity) => (
+                  <option key={opportunity.id} value={String(opportunity.id)}>
+                    {opportunity.title}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
           <div className="form-actions">
             <button
@@ -2523,6 +2956,10 @@ function TasksView({
           </b>
           <span>repeating</span>
         </div>
+        <div>
+          <b>{linkedToBusiness}</b>
+          <span>business-linked</span>
+        </div>
         <div className="task-progress">
           <span>
             <i
@@ -2540,6 +2977,7 @@ function TasksView({
             <span>Task</span>
             <span>Due</span>
             <span>Repeats</span>
+            <span>Context</span>
             <span />
           </div>
           {open.map((task) => (
@@ -2558,6 +2996,20 @@ function TasksView({
               <div className="task-copy">
                 <b>{task.title}</b>
                 <p>{task.description}</p>
+                {(task.businessId || task.opportunityId) && (
+                  <div className="task-context">
+                    {task.businessId && (
+                      <Label tone="brief">
+                        {businesses.find((business) => String(business.id) === String(task.businessId))?.name || "Unknown business"}
+                      </Label>
+                    )}
+                    {task.opportunityId && (
+                      <Label tone="watch">
+                        {opportunities.find((opportunity) => String(opportunity.id) === String(task.opportunityId))?.title || "Linked opportunity"}
+                      </Label>
+                    )}
+                  </div>
+                )}
               </div>
               <Label tone={isTaskDueToday(task.due) ? "high" : undefined}>
                 {formatTaskDue(task.due)}
@@ -2565,6 +3017,11 @@ function TasksView({
               <span className="repeat-text">
                 <RefreshCw size={13} />
                 {task.recurrence}
+              </span>
+              <span className="task-context-cell">
+                {task.businessId
+                  ? businesses.find((business) => String(business.id) === String(task.businessId))?.name || "Unknown"
+                  : "General"}
               </span>
               <button
                 className="more-button"
@@ -2602,6 +3059,9 @@ function TasksView({
                     : "Completed"}
                   {` · was due ${formatTaskDue(task.due)}`}
                   {task.seriesId !== undefined ? " · recurring occurrence" : ""}
+                  {task.businessId
+                    ? ` · ${businesses.find((business) => String(business.id) === String(task.businessId))?.name || "Unknown business"}`
+                    : ""}
                 </small>
               </div>
               {task.seriesId === undefined && (
@@ -3847,6 +4307,7 @@ export function ControlCenter() {
   const [tasks, setTasks] = useState<Task[]>([]);
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [opportunities, setOpportunities] = useState<Opportunity[]>([]);
+  const [liveSnapshot, setLiveSnapshot] = useState<ZeltechSyncResponse | null>(null);
   const [toast, setToast] = useState("");
   const [workspaceReady, setWorkspaceReady] = useState(false);
   const [bootstrapStatus, setBootstrapStatus] = useState<
@@ -3856,6 +4317,59 @@ export function ControlCenter() {
   const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
   const [workspaceSaveError, setWorkspaceSaveError] = useState("");
   const workspaceSaveQueue = useRef(Promise.resolve());
+
+  const syncFromZeltech = async () => {
+    const response = await fetch("/api/portfolio/zeltech/live", {
+      cache: "no-store",
+    });
+    const payload = (await response.json()) as
+      | ZeltechSyncResponse
+      | { error: string };
+    if (!response.ok || !("ventures" in payload)) {
+      throw new Error(
+        "error" in payload
+          ? payload.error
+          : "Could not sync Zeltech HQ.",
+      );
+    }
+    const imported = payload.ventures.map(ventureToBusiness);
+    const importedOpportunities = (payload.actions || [])
+      .filter((action) =>
+        /(launch|proposal|renewal|client|sale|revenue|promote|review)/i.test(
+          `${action.type} ${action.title} ${action.detail}`,
+        ),
+      )
+      .map((action) => {
+        const matchingBusiness = imported.find(
+          (business) =>
+            business.name.toLowerCase() === action.venture.toLowerCase(),
+        );
+        return {
+          id: `zel:${action.id}`,
+          businessId: matchingBusiness?.id || "unassigned",
+          title: action.title,
+          description: action.detail,
+          value: matchingBusiness?.cashCollected || null,
+          confidence:
+            action.priority === "high"
+              ? "High"
+              : action.priority === "low"
+                ? "Low"
+                : "Medium",
+          speed: action.requiresApproval ? "This week" : "Now",
+          status: action.status === "done" ? "Won" : "Open",
+          nextStep: `Owner: ${action.owner}`,
+          source: "Zel HQ",
+          createdAt: action.createdAt,
+          updatedAt: action.updatedAt,
+        } satisfies Opportunity;
+      })
+      .filter((item) => item.businessId !== "unassigned");
+    setBusinesses(imported);
+    if (importedOpportunities.length) setOpportunities(importedOpportunities);
+    setLiveSnapshot(payload);
+    setToast(`Synced ${imported.length} ventures from Zel HQ`);
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -3917,6 +4431,83 @@ export function ControlCenter() {
               "The first-run workspace could not be initialized. No local data was replaced.",
             );
           nextWorkspace = (await importResponse.json()) as WorkspaceState;
+        }
+        if (!nextWorkspace.businesses.length) {
+          try {
+            const portfolioResponse = await fetch("/api/portfolio/zeltech/live", {
+              cache: "no-store",
+            });
+            const portfolioPayload =
+              (await portfolioResponse.json()) as
+                | ZeltechSyncResponse
+                | { error: string };
+            if (
+              portfolioResponse.ok &&
+              "ventures" in portfolioPayload &&
+              portfolioPayload.ventures.length
+            ) {
+              setLiveSnapshot(portfolioPayload);
+              nextWorkspace = {
+                ...nextWorkspace,
+                businesses: portfolioPayload.ventures.map(ventureToBusiness),
+                opportunities: nextWorkspace.opportunities.length
+                  ? nextWorkspace.opportunities
+                  : (portfolioPayload.actions || [])
+                      .filter((action) =>
+                        /(launch|proposal|renewal|client|sale|revenue|promote|review)/i.test(
+                          `${action.type} ${action.title} ${action.detail}`,
+                        ),
+                      )
+                      .map((action) => {
+                        const matchingBusiness = portfolioPayload.ventures.find(
+                          (venture) =>
+                            venture.name.toLowerCase() ===
+                            action.venture.toLowerCase(),
+                        );
+                        return {
+                          id: `zel:${action.id}`,
+                          businessId: matchingBusiness?.id || "unassigned",
+                          title: action.title,
+                          description: action.detail,
+                          value:
+                            typeof matchingBusiness?.revenue === "number"
+                              ? matchingBusiness.revenue
+                              : null,
+                          confidence:
+                            action.priority === "high"
+                              ? "High"
+                              : action.priority === "low"
+                                ? "Low"
+                                : "Medium",
+                          speed: action.requiresApproval ? "This week" : "Now",
+                          status: action.status === "done" ? "Won" : "Open",
+                          nextStep: `Owner: ${action.owner}`,
+                          source: "Zel HQ",
+                          createdAt: action.createdAt,
+                          updatedAt: action.updatedAt,
+                        } satisfies Opportunity;
+                      })
+                      .filter((item) => item.businessId !== "unassigned"),
+              };
+            }
+          } catch {
+            // Keep bootstrap resilient if the ZelHQ bridge is unavailable.
+          }
+        }
+        if (!cancelled) {
+          try {
+            const liveResponse = await fetch("/api/portfolio/zeltech/live", {
+              cache: "no-store",
+            });
+            const livePayload = (await liveResponse.json()) as
+              | ZeltechSyncResponse
+              | { error: string };
+            if (liveResponse.ok && "ventures" in livePayload) {
+              setLiveSnapshot(livePayload);
+            }
+          } catch {
+            // The app should still open using the persisted workspace if live sync is unavailable.
+          }
         }
         if (cancelled) return;
         setSettings(loadedSettings);
@@ -4208,6 +4799,7 @@ export function ControlCenter() {
             tasks={tasks}
             businesses={businesses}
             opportunities={opportunities}
+            liveSnapshot={liveSnapshot}
             goTo={goTo}
             openSettings={openSettings}
             addBriefTask={addBriefTask}
@@ -4219,12 +4811,14 @@ export function ControlCenter() {
             setBusinesses={setBusinesses}
             opportunities={opportunities}
             goToMoney={() => goTo("money")}
+            syncFromZeltech={syncFromZeltech}
           />
         )}{" "}
         {activeTab === "money" && (
           <MoneyView
             businesses={businesses}
             opportunities={opportunities}
+            liveSnapshot={liveSnapshot}
             setOpportunities={setOpportunities}
             addTask={addTask}
           />
@@ -4276,7 +4870,12 @@ export function ControlCenter() {
           />
         )}{" "}
         {activeTab === "tasks" && (
-          <TasksView tasks={tasks} setTasks={setTasks} />
+          <TasksView
+            tasks={tasks}
+            setTasks={setTasks}
+            businesses={businesses}
+            opportunities={opportunities}
+          />
         )}{" "}
         {activeTab === "settings" && (
           <SettingsView

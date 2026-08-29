@@ -185,6 +185,16 @@ export function cleanTaskItems(value: unknown): TaskItem[] {
         typeof candidate.seriesId === "number"
           ? candidate.seriesId
           : undefined,
+      businessId:
+        typeof candidate.businessId === "string" ||
+        typeof candidate.businessId === "number"
+          ? candidate.businessId
+          : undefined,
+      opportunityId:
+        typeof candidate.opportunityId === "string" ||
+        typeof candidate.opportunityId === "number"
+          ? candidate.opportunityId
+          : undefined,
       recurrenceAnchorDay:
         typeof candidate.recurrenceAnchorDay === "number" &&
         Number.isInteger(candidate.recurrenceAnchorDay) &&

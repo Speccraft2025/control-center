@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Control Center",
-  description: "A self-hosted dashboard for signals, mentions, newsletters, audience, reminders, and tasks.",
+  title: "Zel",
+  description: "A local-first operating system for signals, execution, and portfolio growth.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
