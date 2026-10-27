@@ -161,3 +161,63 @@ test("local output stopped at its length limit cannot become a partial saved res
     await assert.rejects(runConfiguredAi(settingsFor("lmstudio"), { prompt: "Extract stories" }), /incomplete result was not saved/);
   });
 });
+
+test("Ollama constrains decoding to the caller's schema in its own format field", async () => {
+  const { runConfiguredAi } = await import("../lib/server/ai");
+  const { NEWSLETTER_STORY_SCHEMA } = await import("../lib/ai-json-schemas");
+  await withFetch((async (url, init) => {
+    if (String(url).endsWith("/api/ps")) return Response.json({ models: [{ name: "qwen3:8b", details: { format: "gguf" }, context_length: 32_768 }] });
+    if (String(url).endsWith("/api/show")) return Response.json({ capabilities: ["completion"], details: { format: "gguf" } });
+    const body = JSON.parse(String(init?.body));
+    assert.deepEqual(body.format, NEWSLETTER_STORY_SCHEMA.schema);
+    // Ollama has no response_format; sending one would be silently ignored.
+    assert.equal(Object.hasOwn(body, "response_format"), false);
+    return Response.json({ message: { role: "assistant", content: '{"stories":[]}' }, done: true });
+  }) as typeof fetch, () => runConfiguredAi(settingsFor("ollama", "qwen3:8b"), {
+    prompt: "Extract real stories", jsonSchema: NEWSLETTER_STORY_SCHEMA,
+  }));
+});
+
+test("LM Studio receives the same schema as a strict OpenAI json_schema", async () => {
+  const { runConfiguredAi } = await import("../lib/server/ai");
+  const { MENTION_CURATION_SCHEMA } = await import("../lib/ai-json-schemas");
+  await withFetch((async (url, init) => {
+    if (String(url).endsWith("/api/v1/models")) return Response.json({ models: [{ key: "qwen3", type: "llm", loaded_instances: [{ id: "qwen-running", config: { context_length: 32_768 } }] }] });
+    const body = JSON.parse(String(init?.body));
+    assert.deepEqual(body.response_format, {
+      type: "json_schema",
+      json_schema: { name: MENTION_CURATION_SCHEMA.name, strict: true, schema: MENTION_CURATION_SCHEMA.schema },
+    });
+    assert.equal(Object.hasOwn(body, "format"), false);
+    return Response.json({ choices: [{ message: { content: '{"mentions":[]}' } }] });
+  }) as typeof fetch, () => runConfiguredAi(settingsFor("lmstudio"), {
+    prompt: "Summarize verified mentions", jsonSchema: MENTION_CURATION_SCHEMA,
+  }));
+});
+
+test("a caller without a schema still sends an unconstrained local request", async () => {
+  const { runConfiguredAi } = await import("../lib/server/ai");
+  await withFetch((async (url, init) => {
+    if (String(url).endsWith("/api/ps")) return Response.json({ models: [{ name: "qwen3:8b", details: { format: "gguf" }, context_length: 32_768 }] });
+    if (String(url).endsWith("/api/show")) return Response.json({ capabilities: ["completion"], details: { format: "gguf" } });
+    const body = JSON.parse(String(init?.body));
+    assert.equal(Object.hasOwn(body, "format"), false);
+    assert.equal(Object.hasOwn(body, "response_format"), false);
+    return Response.json({ message: { role: "assistant", content: "{}" }, done: true });
+  }) as typeof fetch, () => runConfiguredAi(settingsFor("ollama", "qwen3:8b"), { prompt: "Rank these pages" }));
+});
+
+test("cloud providers keep their own JSON handling and never receive a local schema", async () => {
+  const { runConfiguredAi } = await import("../lib/server/ai");
+  const { INDUSTRY_SELECTION_SCHEMA } = await import("../lib/ai-json-schemas");
+  await withFetch((async (url, init) => {
+    const body = JSON.parse(String(init?.body));
+    assert.equal(String(url), "https://api.anthropic.com/v1/messages");
+    assert.equal(Object.hasOwn(body, "format"), false);
+    assert.equal(Object.hasOwn(body, "response_format"), false);
+    assert.equal(Object.hasOwn(body, "json_schema"), false);
+    return Response.json({ content: [{ type: "text", text: '{"selections":[]}' }] });
+  }) as typeof fetch, () => runConfiguredAi(settingsFor("anthropic", "claude-sonnet-4-20250514"), {
+    prompt: "Rank these collected pages", jsonSchema: INDUSTRY_SELECTION_SCHEMA,
+  }));
+});
