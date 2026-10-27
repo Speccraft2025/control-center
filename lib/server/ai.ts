@@ -6,6 +6,7 @@ import {
   type StoredSettings,
 } from "@/lib/server/settings";
 import { AI_PROVIDER_LABELS, DEFAULT_AI_MODELS, aiSupportsWebSearch, cleanAiModelOverride, isLocalAiProvider, localAiBaseUrl } from "@/lib/ai-providers";
+import type { AiJsonSchema } from "@/lib/ai-json-schemas";
 import { aiProviderJson } from "@/lib/ai-provider-http";
 import { discoverAiModels } from "@/lib/server/ai-models";
 import { assertLocalAiContext } from "@/lib/ai-local-context";
@@ -14,6 +15,9 @@ export type AiRunOptions = {
   prompt: string;
   webSearch?: boolean;
   maxOutputTokens?: number;
+  // Constrains local decoding to the caller's envelope. Cloud providers keep
+  // their own JSON modes; this is only forwarded to LM Studio and Ollama.
+  jsonSchema?: AiJsonSchema;
 };
 
 export type AiRunResult = {
@@ -255,6 +259,14 @@ async function runLocalAi(settings: StoredSettings, provider: "lmstudio" | "olla
         ? { max_tokens: outputTokens }
         // Omit keep_alive: retain Ollama's user-configured server/runner lifetime.
         : { options: { num_predict: outputTokens, num_ctx: contextLength }, truncate: false, shift: false }),
+      // Each local server takes a schema in its own shape. Without one a small
+      // model returns the right fields inside the wrong envelope and the whole
+      // job fails validation, so the request is never sent unconstrained.
+      ...(options.jsonSchema
+        ? provider === "lmstudio"
+          ? { response_format: { type: "json_schema", json_schema: { name: options.jsonSchema.name, strict: true, schema: options.jsonSchema.schema } } }
+          : { format: options.jsonSchema.schema }
+        : {}),
     }),
   });
   const choices = Array.isArray(payload.choices) ? payload.choices : [];
