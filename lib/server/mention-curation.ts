@@ -11,6 +11,7 @@ import {
   type VerifiedMentionEvidence,
 } from "@/lib/mention-curation";
 import { parseAiJson, runConfiguredAi } from "@/lib/server/ai";
+import { MENTION_CURATION_SCHEMA } from "@/lib/ai-json-schemas";
 import { configuredAiReady, type StoredSettings } from "@/lib/server/settings";
 import type { AiKeyProvider } from "@/lib/types";
 
@@ -49,6 +50,7 @@ export async function curateMentionsWithAi(
   if (pending.length) {
     const batch = runConfiguredAi(settings, {
       maxOutputTokens: 6_000,
+      jsonSchema: MENTION_CURATION_SCHEMA,
       prompt: [
         "Summarize and prioritize already-verified public mentions for the person or organization tracking them.",
         "Identity validation has already happened. You must not add candidates, change identity confidence, or decide that an unverified page is a verified mention.",
